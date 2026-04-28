@@ -1,7 +1,8 @@
-// scheduler.cpp
+// /src/scheduler/scheduler.cpp
 #include "scheduler/scheduler.h"
 
 #include <algorithm>
+#include <thread> 
 
 namespace OneTaskCore {
 
@@ -17,19 +18,69 @@ void Scheduler::AddTask(std::shared_ptr<Task> task) {
 }
 
 // ========================
+// 僵尸任务清理 (内存回收)
+// ========================
+void Scheduler::CleanupTasks() {
+  m_tasks.erase(std::remove_if(m_tasks.begin(), m_tasks.end(),
+                               [](const std::shared_ptr<Task>& t) {
+                                 TaskState state = t->GetState();
+                                 return state == TaskState::FINISHED ||
+                                        state == TaskState::ERROR ||
+                                        t->IsCancelled();
+                               }),
+                m_tasks.end());
+}
+
+// ========================
 // 核心调度循环
 // ========================
 void Scheduler::Run() {
   while (true) {
+    // 1. 每轮循环开始前，清理掉已经结束的任务
+    CleanupTasks();
+
+    // 2. 如果任务队列彻底空了，才真正退出调度器
+    if (m_tasks.empty()) {
+      break;
+    }
+
     auto task = PickNextTask();
+
+    // 3. 提早停机与 CPU 空转修复
     if (!task) {
-      break;  // 没任务了
+      uint64_t now = NowMs();
+      uint64_t next_wake_time = UINT64_MAX;
+
+      // 寻找距离现在最近的下一个任务的执行时间
+      for (const auto& t : m_tasks) {
+        if (t->GetState() == TaskState::READY &&
+            t->GetNextRunTime() < next_wake_time) {
+          next_wake_time = t->GetNextRunTime();
+        }
+      }
+
+      if (next_wake_time != UINT64_MAX && next_wake_time > now) {
+        // 精准休眠到下一个任务的触发时间
+        std::this_thread::sleep_for(
+            std::chrono::milliseconds(next_wake_time - now));
+      } else {
+        // 兜底休眠：防止状态异常导致的 CPU 100% 占用
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      }
+      continue;  // 醒来后重新挑选任务
     }
 
     task->SetState(TaskState::RUNNING);
 
-    // 执行任务
+    // ========================
+    // 4. 结合 Monitor：记录执行耗时
+    // ========================
+    uint64_t start_time = NowMs();
     TaskResult result = task->Execute();
+    uint64_t end_time = NowMs();
+
+    m_monitor.Record(task->GetId(), end_time - start_time);
+    // ========================
 
     uint64_t now = NowMs();
 
@@ -41,7 +92,6 @@ void Scheduler::Run() {
     switch (result) {
       case TaskResult::SUCCESS:
         if (task->IsPeriodic()) {
-          // 周期任务 → 设置下一次执行时间
           task->SetNextRunTime(now + task->GetPeriod());
           task->SetState(TaskState::READY);
         } else {
@@ -68,13 +118,9 @@ std::shared_ptr<Task> Scheduler::PickNextTask() {
   std::shared_ptr<Task> best = nullptr;
 
   for (auto& task : m_tasks) {
-    // 只调度 READY
     if (task->GetState() != TaskState::READY) continue;
-
-    // 时间还没到，不能执行
     if (task->GetNextRunTime() > now) continue;
 
-    // 优先级选择
     if (!best || task->GetPriority() < best->GetPriority()) {
       best = task;
     }
