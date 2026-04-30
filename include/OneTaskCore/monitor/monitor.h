@@ -2,30 +2,37 @@
 #pragma once
 #include <cstdint>
 #include <unordered_map>
+#include <mutex>
 
-namespace OneTaskCore {
+namespace OneTaskCore
+{
 
-struct TaskStats {
-  uint64_t exec_count = 0;
-  uint64_t total_time = 0;  // ms
-  uint64_t max_time = 0;
-  uint64_t min_time = UINT64_MAX;
+struct TaskStats
+{
+    uint64_t exec_count = 0;
+    uint64_t total_time = 0;  // microseconds
+    uint64_t max_time = 0;
+    uint64_t min_time = UINT64_MAX;
 
-  double AvgTime() const {
-    return exec_count == 0 ? 0.0 : (double)total_time / exec_count;
-  }
+    double AvgTime() const
+    {
+        return exec_count == 0 ? 0.0 : (double)total_time / exec_count;
+    }
 };
 
-class TaskMonitor {
- public:
-  void Record(uint32_t task_id, uint64_t exec_time);
+class TaskMonitor
+{
+   public:
+    void Record(uint32_t task_id, uint64_t exec_time);
 
-  const TaskStats* GetStats(uint32_t task_id) const;
+    const TaskStats* GetStats(uint32_t task_id) const;
 
-  void PrintAll() const;
+    void PrintAll() const;
 
- private:
-  std::unordered_map<uint32_t, TaskStats> m_stats;
+   private:
+    std::unordered_map<uint32_t, TaskStats> m_stats;
+
+    std::mutex mtx;
 };
 
 }  // namespace OneTaskCore
